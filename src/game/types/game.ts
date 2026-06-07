@@ -245,6 +245,7 @@ export interface WeekState {
   isComplete: boolean;
   finalScore: number | null;
   name: string;
+  environment?: Environment;
 }
 
 export type WeekScene = 'menu' | 'prep' | 'business' | 'settlement' | 'review';
@@ -261,6 +262,11 @@ export interface WeeklyArchive {
   daysCompleted: number;
   finalScore: number;
   history: DailyStats[];
+  budget: number;
+  cats: Cat[];
+  unlockedDrinks: DrinkType[];
+  totalComplaints: number;
+  currentEnvironment: Environment;
 }
 
 export interface BestWeekRecord {
@@ -365,6 +371,8 @@ export interface TransitionActions {
     budget: number;
     staff: Staff[];
     nextEvent: BusinessEvent;
+    totalPurchaseCost: number;
+    totalStaffCost: number;
   };
   reset: () => void;
 }

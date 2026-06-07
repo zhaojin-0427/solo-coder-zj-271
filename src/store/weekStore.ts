@@ -22,6 +22,7 @@ import { uid, clamp } from '../utils/helpers';
 
 export interface WeekActions {
   startWeek: (difficulty: Difficulty, name?: string) => void;
+  updateStateBetweenDays: (updates: { cats?: Cat[]; environment?: Environment; budget?: number; unlockedDrinks?: DrinkType[]; totalComplaints?: number }) => void;
   commitDailyStats: (
     stats: DailyStats,
     cats: Cat[],
@@ -60,6 +61,14 @@ const createInitialWeekState = (): WeekState => ({
   isComplete: false,
   finalScore: null,
   name: '',
+  environment: {
+    litterCleanliness: 100,
+    foodSupply: 100,
+    machineDurability: 100,
+    machineBroken: false,
+    machineRepairTime: 0,
+    hygiene: 100,
+  },
 });
 
 export const useWeekStore = create<WeekState & WeekActions>((set, get) => ({
@@ -77,6 +86,17 @@ export const useWeekStore = create<WeekState & WeekActions>((set, get) => ({
       budget,
       name: name || `周挑战-${new Date().toLocaleDateString('zh-CN')}`,
     });
+  },
+
+  updateStateBetweenDays: (updates) => {
+    set((s) => ({
+      ...s,
+      ...(updates.cats ? { cats: updates.cats.map((c) => ({ ...c })) } : {}),
+      ...(updates.environment ? { environment: { ...updates.environment } } : {}),
+      ...(updates.budget !== undefined ? { budget: updates.budget } : {}),
+      ...(updates.unlockedDrinks ? { unlockedDrinks: [...updates.unlockedDrinks] } : {}),
+      ...(updates.totalComplaints !== undefined ? { totalComplaints: updates.totalComplaints } : {}),
+    }));
   },
 
   commitDailyStats: (stats, cats, environment, unlockedDrinks, budget, prepCost) => {
@@ -115,6 +135,7 @@ export const useWeekStore = create<WeekState & WeekActions>((set, get) => ({
         totalComplaints: s.totalComplaints + stats.complaints,
         cats: cats.map((c) => ({ ...c })),
         unlockedDrinks: [...unlockedDrinks],
+        environment: { ...environment },
         budget,
         currentDay: stats.day + 1,
         isComplete: stats.day >= s.totalDays,
@@ -175,6 +196,11 @@ export const useWeekStore = create<WeekState & WeekActions>((set, get) => ({
       daysCompleted: s.history.length,
       finalScore: s.finalScore || s.calculateFinalScore(),
       history: s.history,
+      budget: s.budget,
+      cats: s.cats.map((c) => ({ ...c })),
+      unlockedDrinks: [...s.unlockedDrinks],
+      totalComplaints: s.totalComplaints,
+      currentEnvironment: { ...s.environment },
     };
     saveWeeklyArchive(archive);
     return archive.id;
@@ -185,6 +211,13 @@ export const useWeekStore = create<WeekState & WeekActions>((set, get) => ({
     const archive = archives.find((a) => a.id === id);
     if (!archive) return false;
 
+    const bestDay = archive.history.length > 0
+      ? archive.history.reduce((a, b) => (a.netProfit >= b.netProfit ? a : b)).day
+      : null;
+    const worstDay = archive.history.length > 0
+      ? archive.history.reduce((a, b) => (a.netProfit <= b.netProfit ? a : b)).day
+      : null;
+
     set({
       id: archive.id,
       createdAt: archive.createdAt,
@@ -192,19 +225,20 @@ export const useWeekStore = create<WeekState & WeekActions>((set, get) => ({
       totalDays: 7,
       difficulty: archive.difficulty,
       startingBudget: weekStartingBudget[archive.difficulty],
-      budget: 0,
+      budget: archive.budget,
       cumulativeRevenue: archive.totalRevenue,
       cumulativeProfit: archive.totalProfit,
       avgSatisfaction: archive.avgSatisfaction,
-      cats: initialCats.map((c) => ({ ...c })),
-      unlockedDrinks: ['coffee', 'matcha', 'milkTea', 'cappuccino'],
-      totalComplaints: 0,
+      cats: archive.cats.map((c) => ({ ...c })),
+      unlockedDrinks: [...archive.unlockedDrinks],
+      totalComplaints: archive.totalComplaints,
       history: archive.history,
-      bestDay: null,
-      worstDay: null,
+      bestDay,
+      worstDay,
       isComplete: archive.daysCompleted >= 7,
       finalScore: archive.finalScore,
       name: archive.name,
+      environment: archive.currentEnvironment ? { ...archive.currentEnvironment } : undefined,
     });
     return true;
   },

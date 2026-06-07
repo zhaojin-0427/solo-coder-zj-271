@@ -179,6 +179,7 @@ export const useTransitionStore = create<TransitionState & TransitionActions>((s
     const remainingBudget = s.budget - purchaseCost - staffCost;
 
     const nextEvent: BusinessEvent = s.predictedEvent || 'none';
+    const selectedStaffCopy = s.selectedStaff.map((st) => ({ ...st }));
 
     set(createInitialTransitionState());
 
@@ -188,8 +189,10 @@ export const useTransitionStore = create<TransitionState & TransitionActions>((s
       unlockedDrinks,
       complaints,
       budget: remainingBudget,
-      staff: s.selectedStaff,
+      staff: selectedStaffCopy,
       nextEvent,
+      totalPurchaseCost: purchaseCost,
+      totalStaffCost: staffCost,
     };
   },
 

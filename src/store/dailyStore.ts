@@ -61,6 +61,10 @@ export const useDailyStore = create<DailyState & DailyActions>((set, get) => ({
     const dayConfig = weekDayConfigs[dayIndex];
     const eventCfg = businessEventConfigs[event];
 
+    const baseEnvironment = weekState.environment
+      ? { ...createInitialEnvironment(), ...weekState.environment }
+      : createInitialEnvironment();
+
     set({
       day,
       difficulty: dayConfig.difficulty,
@@ -81,7 +85,7 @@ export const useDailyStore = create<DailyState & DailyActions>((set, get) => ({
         health: clamp(c.health + eventCfg.catHealthModifier, 0, 100),
       })),
       customers: [],
-      environment: { ...createInitialEnvironment() },
+      environment: baseEnvironment,
       unlockedDrinks: [...weekState.unlockedDrinks],
       isPaused: false,
       businessEvent: event,
