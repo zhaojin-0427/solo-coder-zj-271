@@ -1,74 +1,47 @@
 import { create } from 'zustand';
 import type {
-  GameState,
-  Difficulty,
+  DailyState,
+  DailyActions,
   Customer,
-  DrinkType,
-  Temperature,
+  DailyStats,
   CatAction,
-  EventType,
-  Notification,
+  Environment,
 } from '../game/types/game';
+import { weekDayConfigs } from '../game/config/dayConfigs';
+import { businessEventConfigs } from '../game/config/businessEvents';
+import { staffConfigs } from '../game/config/staffConfigs';
+import { clamp, uid, randomChoice, generateCustomer } from '../utils/helpers';
 import { initialCats } from '../game/config/catData';
-import { dayConfigs } from '../game/config/dayConfigs';
-import { clamp, uid, generateCustomer, randomChoice } from '../utils/helpers';
-import type { GameResult } from '../game/types/game';
-import { saveHighScore, loadHighScores } from '../utils/storage';
-import { calculateStars, calculateScore } from '../utils/helpers';
 
-interface GameActions {
-  startGame: (difficulty: Difficulty) => void;
-  endGame: () => GameResult;
-  tick: (delta: number) => void;
-  togglePause: () => void;
-  
-  interactWithCat: (catId: string, action: CatAction) => void;
-  selectDrinkType: (type: DrinkType | null) => void;
-  selectTemperature: (temp: Temperature | null) => void;
-  selectCustomer: (customerId: string | null) => void;
-  serveDrink: () => { success: boolean; message: string };
-  
-  cleanLitter: () => void;
-  refillFood: () => void;
-  repairMachine: () => void;
-  
-  triggerEvent: (type: EventType, message: string) => void;
-  clearEvent: () => void;
-  
-  addNotification: (message: string, type: Notification['type']) => void;
-  removeNotification: (id: string) => void;
-  
-  spawnCustomer: () => void;
-  removeCustomer: (customerId: string, satisfied: boolean) => void;
-  
-  getSelectedCustomer: () => Customer | undefined;
-}
-
-const initialEnvironment = {
+const createInitialEnvironment = (): Environment => ({
   litterCleanliness: 100,
   foodSupply: 100,
+  machineDurability: 100,
   machineBroken: false,
   machineRepairTime: 0,
-};
+  hygiene: 100,
+});
 
-const createInitialState = (difficulty: Difficulty): Omit<GameState, 'scene'> => {
-  const config = dayConfigs[difficulty];
-  const isHoliday = Math.random() < config.holidayChance;
-  
+const createInitialDailyState = (): DailyState => {
+  const dayConfig = weekDayConfigs[0];
   return {
-    day: difficulty === 'easy' ? 1 : difficulty === 'normal' ? 2 : 3,
-    difficulty,
+    day: 1,
+    difficulty: dayConfig.difficulty,
     satisfaction: 75,
     revenue: 0,
-    timeRemaining: config.duration,
+    timeRemaining: dayConfig.duration,
     customersServed: 0,
     correctDrinks: 0,
     totalDrinks: 0,
-    cats: initialCats.map(cat => ({ ...cat })),
+    complaintsToday: 0,
+    customersLost: 0,
+    lostReasons: { timeout: 0, wrongDrink: 0 },
+    cats: initialCats.map((c) => ({ ...c })),
     customers: [],
-    environment: { ...initialEnvironment },
+    environment: createInitialEnvironment(),
+    unlockedDrinks: ['coffee', 'matcha', 'milkTea', 'cappuccino'],
     isPaused: false,
-    isHoliday,
+    businessEvent: 'none',
     currentEvent: null,
     eventMessage: '',
     eventTimer: 0,
@@ -76,44 +49,110 @@ const createInitialState = (difficulty: Difficulty): Omit<GameState, 'scene'> =>
     selectedTemperature: null,
     selectedCustomerId: null,
     notifications: [],
+    staff: [],
   };
 };
 
-export const useGameStore = create<GameState & GameActions>((set, get) => ({
-  ...createInitialState('easy'),
+export const useDailyStore = create<DailyState & DailyActions>((set, get) => ({
+  ...createInitialDailyState(),
 
-  startGame: (difficulty) => {
-    set(createInitialState(difficulty));
-    if (get().isHoliday) {
-      get().addNotification('🎉 节假日客流高峰!收入增加，但顾客更多了!', 'info');
+  startDay: (day, weekState, event, staff) => {
+    const dayIndex = Math.min(day - 1, weekDayConfigs.length - 1);
+    const dayConfig = weekDayConfigs[dayIndex];
+    const eventCfg = businessEventConfigs[event];
+
+    set({
+      day,
+      difficulty: dayConfig.difficulty,
+      satisfaction: weekState.history.length > 0
+        ? weekState.history[weekState.history.length - 1].satisfactionEnd
+        : 75,
+      revenue: 0,
+      timeRemaining: dayConfig.duration,
+      customersServed: 0,
+      correctDrinks: 0,
+      totalDrinks: 0,
+      complaintsToday: 0,
+      customersLost: 0,
+      lostReasons: { timeout: 0, wrongDrink: 0 },
+      cats: weekState.cats.map((c) => ({
+        ...c,
+        mood: clamp(c.mood + eventCfg.catMoodModifier, 0, 100),
+        health: clamp(c.health + eventCfg.catHealthModifier, 0, 100),
+      })),
+      customers: [],
+      environment: { ...createInitialEnvironment() },
+      unlockedDrinks: [...weekState.unlockedDrinks],
+      isPaused: false,
+      businessEvent: event,
+      currentEvent: null,
+      eventMessage: '',
+      eventTimer: 0,
+      selectedDrinkType: null,
+      selectedTemperature: null,
+      selectedCustomerId: null,
+      notifications: [],
+      staff: staff.map((s) => ({ ...s })),
+    });
+
+    if (event !== 'none') {
+      get().addNotification(
+        `${eventCfg.emoji} ${eventCfg.name}：${eventCfg.description}`,
+        eventCfg.catMoodModifier < 0 ? 'warning' : 'info'
+      );
     }
   },
 
-  endGame: (): GameResult => {
-    const state = get();
-    const config = dayConfigs[state.difficulty];
-    const success = state.satisfaction >= config.targetSatisfaction && state.revenue >= config.targetRevenue;
-    const stars = calculateStars(state.satisfaction, state.revenue, config.targetSatisfaction, config.targetRevenue);
-    const score = calculateScore(state.satisfaction, state.revenue, state.customersServed);
-    
-    const isNewHighScore = saveHighScore({
-      difficulty: state.difficulty,
-      score,
-      revenue: state.revenue,
-      satisfaction: state.satisfaction,
-      date: new Date().toLocaleDateString('zh-CN'),
-      customersServed: state.customersServed,
-    });
+  endDay: (): DailyStats => {
+    const s = get();
+    const avgMood = s.cats.reduce((sum, c) => sum + c.mood, 0) / s.cats.length;
+    const avgHealth = s.cats.reduce((sum, c) => sum + c.health, 0) / s.cats.length;
+    const avgHunger = s.cats.reduce((sum, c) => sum + c.hunger, 0) / s.cats.length;
+    const sickCount = s.cats.filter((c) => c.isSick).length;
+    const staffCost = s.staff.reduce((sum, st) => sum + st.dailyCost, 0);
+    const eventCfg = businessEventConfigs[s.businessEvent];
+    const dayConfig = weekDayConfigs[Math.min(s.day - 1, weekDayConfigs.length - 1)];
+    const prevSat = s.day === 1
+      ? 75
+      : (s.satisfaction - 10);
+
+    const netProfit = s.revenue - staffCost;
+
+    const keyEvents: string[] = [];
+    if (s.businessEvent !== 'none') {
+      keyEvents.push(`${eventCfg.emoji} ${eventCfg.name}`);
+    }
+    if (s.complaintsToday > 0) {
+      keyEvents.push(`😤 ${s.complaintsToday} 次顾客投诉`);
+    }
+    if (sickCount > 0) {
+      keyEvents.push(`😿 ${sickCount} 只猫咪生病了`);
+    }
+    if (s.revenue >= dayConfig.targetRevenue * 1.3) {
+      keyEvents.push(`💰 营收超出目标30%！`);
+    }
 
     return {
-      success,
-      satisfaction: state.satisfaction,
-      revenue: state.revenue,
-      customersServed: state.customersServed,
-      correctDrinks: state.correctDrinks,
-      totalDrinks: state.totalDrinks,
-      stars,
-      isNewHighScore,
+      day: s.day,
+      revenue: s.revenue,
+      satisfactionStart: clamp(prevSat, 0, 100),
+      satisfactionEnd: s.satisfaction,
+      customersServed: s.customersServed,
+      customersLost: s.customersLost,
+      lostReasons: { ...s.lostReasons },
+      correctDrinks: s.correctDrinks,
+      totalDrinks: s.totalDrinks,
+      event: s.businessEvent,
+      complaints: s.complaintsToday,
+      catAvgMood: Math.round(avgMood),
+      catAvgHealth: Math.round(avgHealth),
+      catAvgHunger: Math.round(avgHunger),
+      catsSickEndOfDay: sickCount,
+      hygiene: s.environment.hygiene,
+      staffCost,
+      prepCost: 0,
+      netProfit,
+      keyEvents,
     };
   },
 
@@ -121,8 +160,10 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     const state = get();
     if (state.isPaused || state.timeRemaining <= 0) return;
 
-    const config = dayConfigs[state.difficulty];
-    const decayRate = config.catDecayRate;
+    const dayIndex = Math.min(state.day - 1, weekDayConfigs.length - 1);
+    const dayConfig = weekDayConfigs[dayIndex];
+    const eventCfg = businessEventConfigs[state.businessEvent];
+    const decayRate = dayConfig.catDecayRate;
     const dt = delta / 1000;
 
     set((s) => ({
@@ -134,7 +175,7 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
         let newMood = clamp(cat.mood - decayRate * dt * 0.8, 0, 100);
         const newHunger = clamp(cat.hunger - decayRate * dt * 1.2, 0, 100);
         let newHealth = cat.health;
-        const newIsSick = cat.isSick;
+        let newIsSick = cat.isSick;
 
         if (newHunger < 20) {
           newMood = clamp(newMood - dt * 2, 0, 100);
@@ -143,9 +184,18 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
         if (s.environment.litterCleanliness < 30) {
           newMood = clamp(newMood - dt * 1, 0, 100);
         }
+        if (s.environment.hygiene < 40) {
+          newHealth = clamp(newHealth - dt * 0.3, 0, 100);
+          if (!newIsSick && Math.random() < 0.0005 * dt * 60) {
+            newIsSick = true;
+          }
+        }
         if (newIsSick) {
           newHealth = clamp(newHealth - dt * 1.5, 0, 100);
           newMood = clamp(newMood - dt * 1, 0, 100);
+        }
+        if (state.businessEvent === 'catStress') {
+          newMood = clamp(newMood - dt * 0.5, 0, 100);
         }
 
         return {
@@ -158,32 +208,55 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       }),
     }));
 
+    const hygieneMult = eventCfg.hygieneDecayMultiplier;
     set((s) => ({
       environment: {
         ...s.environment,
-        litterCleanliness: clamp(s.environment.litterCleanliness - decayRate * dt * 0.6, 0, 100),
+        litterCleanliness: clamp(s.environment.litterCleanliness - decayRate * dt * 0.6 * hygieneMult, 0, 100),
         foodSupply: clamp(s.environment.foodSupply - decayRate * dt * 0.4, 0, 100),
+        hygiene: clamp(s.environment.hygiene - decayRate * dt * 0.3 * hygieneMult, 0, 100),
+        machineDurability: clamp(
+          s.environment.machineDurability - (state.businessEvent === 'ingredientShortage' ? dt * 0.8 : dt * 0.3),
+          0,
+          100
+        ),
         machineRepairTime: Math.max(0, s.environment.machineRepairTime - dt),
         machineBroken: s.environment.machineRepairTime > 0 ? s.environment.machineBroken : false,
       },
     }));
 
     set((s) => {
+      if (s.environment.machineDurability < 15 && !s.environment.machineBroken && Math.random() < 0.002 * dt * 60) {
+        get().triggerEvent('machineBreak', '🔧 咖啡机坏了!快修好吧~');
+      }
+      return {};
+    });
+
+    set((s) => {
       const updatedCustomers: Customer[] = [];
       let lostCustomers = 0;
+      let lostTimeout = 0;
 
       for (const customer of s.customers) {
         const newPatience = customer.patience - dt;
         if (newPatience <= 0) {
           lostCustomers++;
+          lostTimeout++;
         } else {
           updatedCustomers.push({ ...customer, patience: newPatience });
         }
       }
 
+      if (lostTimeout > 0) {
+        set((ss) => ({
+          lostReasons: { ...ss.lostReasons, timeout: ss.lostReasons.timeout + lostTimeout },
+        }));
+      }
+
       return {
         customers: updatedCustomers,
-        satisfaction: clamp(s.satisfaction - lostCustomers * 8, 0, 100),
+        satisfaction: clamp(s.satisfaction - lostCustomers * 8 * eventCfg.scoreWeightMultiplier, 0, 100),
+        customersLost: s.customersLost + lostCustomers,
       };
     });
 
@@ -195,11 +268,65 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       if (s.environment.litterCleanliness < 30) satChange -= dt * 0.4;
       if (s.environment.foodSupply < 20) satChange -= dt * 0.2;
       if (s.environment.machineBroken) satChange -= dt * 0.3;
+      if (s.environment.hygiene < 30) satChange -= dt * 0.2;
 
       return {
-        satisfaction: clamp(s.satisfaction + satChange, 0, 100),
+        satisfaction: clamp(s.satisfaction + satChange * eventCfg.scoreWeightMultiplier, 0, 100),
       };
     });
+
+    if (state.staff.length > 0) {
+      set((s) => {
+        const env = { ...s.environment };
+        const cats = s.cats.map((c) => ({ ...c }));
+
+        for (const staff of state.staff) {
+          const actionRoll = Math.random();
+          let cumulative = 0;
+
+          const staffConfig = staffConfigs.find((c) => c.strategy === staff.strategy);
+          const autoActions = staffConfig?.autoActions || { clean: 0, makeDrink: 0, feedCat: 0, healCat: 0, petCat: 0 };
+
+          cumulative += autoActions.clean;
+          if (actionRoll < cumulative) {
+            env.litterCleanliness = clamp(env.litterCleanliness + 8 * staff.efficiency, 0, 100);
+            env.hygiene = clamp(env.hygiene + 5 * staff.efficiency, 0, 100);
+            continue;
+          }
+          cumulative += autoActions.feedCat;
+          if (actionRoll < cumulative) {
+            if (env.foodSupply > 10) {
+              const targetCat = cats.find((c) => c.hunger < 60) || cats[0];
+              if (targetCat) {
+                targetCat.hunger = clamp(targetCat.hunger + 15 * staff.efficiency, 0, 100);
+                targetCat.mood = clamp(targetCat.mood + 3 * staff.efficiency, 0, 100);
+                env.foodSupply = clamp(env.foodSupply - 5, 0, 100);
+              }
+            }
+            continue;
+          }
+          cumulative += autoActions.healCat;
+          if (actionRoll < cumulative) {
+            const sickCat = cats.find((c) => c.isSick || c.health < 70);
+            if (sickCat && Math.random() > staff.errorRate) {
+              sickCat.health = clamp(sickCat.health + 10 * staff.efficiency, 0, 100);
+              if (sickCat.health > 80) sickCat.isSick = false;
+            }
+            continue;
+          }
+          cumulative += autoActions.petCat;
+          if (actionRoll < cumulative) {
+            const targetCat = cats.find((c) => c.mood < 60) || cats[Math.floor(Math.random() * cats.length)];
+            if (targetCat) {
+              targetCat.mood = clamp(targetCat.mood + 6 * staff.efficiency, 0, 100);
+            }
+            continue;
+          }
+        }
+
+        return { environment: env, cats };
+      });
+    }
 
     if (state.eventTimer > 0) {
       set((s) => ({ eventTimer: Math.max(0, s.eventTimer - dt) }));
@@ -292,6 +419,8 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
 
   serveDrink: () => {
     const state = get();
+    const eventCfg = businessEventConfigs[state.businessEvent];
+
     if (state.environment.machineBroken) {
       state.addNotification('咖啡机坏了!先修理一下吧~', 'error');
       return { success: false, message: '咖啡机故障' };
@@ -318,8 +447,8 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     set((s) => ({ totalDrinks: s.totalDrinks + 1 }));
 
     if (isCorrect) {
-      let reward = customer.order.reward + customer.tip;
-      
+      let reward = Math.round((customer.order.reward + customer.tip) * eventCfg.orderValueMultiplier);
+
       if (customer.wantsPhoto) {
         const happyCats = state.cats.filter((c) => c.mood >= 70 && !c.isSick);
         if (happyCats.length > 0) {
@@ -330,20 +459,16 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
         }
       }
 
-      if (state.isHoliday) {
-        reward = Math.round(reward * 1.3);
-      }
-
       set((s) => ({
         revenue: s.revenue + reward,
         customersServed: s.customersServed + 1,
         correctDrinks: s.correctDrinks + 1,
-        satisfaction: clamp(s.satisfaction + 4, 0, 100),
+        satisfaction: clamp(s.satisfaction + 4 * eventCfg.scoreWeightMultiplier, 0, 100),
       }));
 
-      get().removeCustomer(customer.id, true);
+      get().removeCustomer(customer.id, true, 'satisfied');
       state.addNotification(`✅ 完美! +¥${reward}`, 'success');
-      
+
       set({
         selectedDrinkType: null,
         selectedTemperature: null,
@@ -353,11 +478,13 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       return { success: true, message: `获得 ¥${reward}` };
     } else {
       set((s) => ({
-        satisfaction: clamp(s.satisfaction - 6, 0, 100),
+        satisfaction: clamp(s.satisfaction - 6 * eventCfg.scoreWeightMultiplier, 0, 100),
+        complaintsToday: s.complaintsToday + 1,
+        lostReasons: { ...s.lostReasons, wrongDrink: s.lostReasons.wrongDrink + 1 },
       }));
-      get().removeCustomer(customer.id, false);
+      get().removeCustomer(customer.id, false, 'wrongDrink');
       state.addNotification(`❌ 做错了!顾客不满意离开了...`, 'error');
-      
+
       set({
         selectedDrinkType: null,
         selectedTemperature: null,
@@ -370,7 +497,7 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
 
   cleanLitter: () => {
     set((s) => ({
-      environment: { ...s.environment, litterCleanliness: 100 },
+      environment: { ...s.environment, litterCleanliness: 100, hygiene: clamp(s.environment.hygiene + 15, 0, 100) },
       satisfaction: clamp(s.satisfaction + 2, 0, 100),
     }));
     get().addNotification('🧹 猫砂盆已清理干净!', 'success');
@@ -389,6 +516,7 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
         ...s.environment,
         machineBroken: false,
         machineRepairTime: 0,
+        machineDurability: clamp(s.environment.machineDurability + 30, 0, 100),
       },
     }));
     get().addNotification('🔧 咖啡机已修好!', 'success');
@@ -404,16 +532,21 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     if (type === 'catSick') {
       const sickCat = randomChoice(get().cats);
       set((s) => ({
-        cats: s.cats.map((c) => (c.id === sickCat.id ? { ...c, isSick: true, health: clamp(c.health - 20, 0, 100) } : c)),
+        cats: s.cats.map((c) =>
+          c.id === sickCat.id ? { ...c, isSick: true, health: clamp(c.health - 20, 0, 100) } : c
+        ),
       }));
     } else if (type === 'customerComplaint') {
-      set((s) => ({ satisfaction: clamp(s.satisfaction - 10, 0, 100) }));
+      set((s) => ({
+        satisfaction: clamp(s.satisfaction - 10, 0, 100),
+        complaintsToday: s.complaintsToday + 1,
+      }));
     } else if (type === 'machineBreak') {
       set((s) => ({
         environment: { ...s.environment, machineBroken: true, machineRepairTime: 15 },
       }));
     } else if (type === 'holiday') {
-      set({ isHoliday: true });
+      set({ businessEvent: 'festival' });
     }
 
     get().addNotification(message, type === 'holiday' ? 'info' : 'warning');
@@ -422,7 +555,7 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
   clearEvent: () => set({ currentEvent: null, eventMessage: '', eventTimer: 0 }),
 
   addNotification: (message, type) => {
-    const notif: Notification = {
+    const notif = {
       id: uid('notif'),
       message,
       type,
@@ -444,20 +577,27 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     if (state.customers.length >= 6) return;
     if (state.timeRemaining <= 0) return;
 
-    const patienceMult = state.difficulty === 'easy' ? 1.3 : state.difficulty === 'normal' ? 1 : 0.8;
-    const holidayBonus = state.isHoliday ? 0.2 : 0;
+    const eventCfg = businessEventConfigs[state.businessEvent];
+    const dayIndex = Math.min(state.day - 1, weekDayConfigs.length - 1);
+    const dayConfig = weekDayConfigs[dayIndex];
+    const patienceMult = dayConfig.difficulty === 'easy' ? 1.3 : dayConfig.difficulty === 'normal' ? 1 : 0.8;
+    const holidayBonus = state.businessEvent === 'festival' ? 0.2 : 0;
+    const photoBonus = eventCfg.photoDemandMultiplier;
+
     const customer = generateCustomer(patienceMult, holidayBonus);
-    
+    customer.wantsPhoto = Math.random() < 0.35 * photoBonus;
+
     set((s) => ({
       customers: [...s.customers, customer],
     }));
   },
 
-  removeCustomer: (customerId, _satisfied) => {
-    void _satisfied;
+  removeCustomer: (customerId, satisfied, _reason) => {
+    void _reason;
     set((s) => ({
       customers: s.customers.filter((c) => c.id !== customerId),
       selectedCustomerId: s.selectedCustomerId === customerId ? null : s.selectedCustomerId,
+      customersLost: satisfied ? s.customersLost : s.customersLost + 1,
     }));
   },
 
@@ -466,5 +606,3 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     return state.customers.find((c) => c.id === state.selectedCustomerId);
   },
 }));
-
-export { loadHighScores };

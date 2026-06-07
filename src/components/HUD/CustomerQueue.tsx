@@ -1,6 +1,5 @@
 import { useGameStore } from '../../store/gameStore';
 import { drinkTypeMap, temperatureMap } from '../../game/config/drinkRecipes';
-import { getMoodColor } from '../../utils/helpers';
 
 export function CustomerQueue() {
   const { customers, selectedCustomerId, selectCustomer } = useGameStore();

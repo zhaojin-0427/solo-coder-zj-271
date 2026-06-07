@@ -1,6 +1,6 @@
 import type { DrinkType, Temperature, Customer, Cat } from '../game/types/game';
 import { drinkRecipes, temperatureOptions } from '../game/config/drinkRecipes';
-import { catNames, catEmojis } from '../game/config/catData';
+import { catNames } from '../game/config/catData';
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
